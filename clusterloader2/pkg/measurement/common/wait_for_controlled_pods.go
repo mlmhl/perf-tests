@@ -40,32 +40,33 @@ import (
 )
 
 const (
-	defaultSyncTimeout               = 60 * time.Second
-	defaultOperationTimeout          = 10 * time.Minute
-	checkControlledPodsInterval      = 5 * time.Second
-	informerSyncTimeout              = time.Minute
-	waitForControlledPodsRunningName = "WaitForControlledPodsRunning"
-	waitForControlledPodsWorkers     = 10
+	defaultSyncTimeout           = 60 * time.Second
+	defaultOperationTimeout      = 10 * time.Minute
+	checkControlledPodsInterval  = 5 * time.Second
+	informerSyncTimeout          = time.Minute
+	waitForControlledPodsName    = "WaitForControlledPods"
+	waitForControlledPodsWorkers = 10
 )
 
 func init() {
-	if err := measurement.Register(waitForControlledPodsRunningName, createWaitForControlledPodsRunningMeasurement); err != nil {
-		klog.Fatalf("Cannot register %s: %v", waitForControlledPodsRunningName, err)
+	if err := measurement.Register(waitForControlledPodsName, createWaitForControlledPodsMeasurement); err != nil {
+		klog.Fatalf("Cannot register %s: %v", waitForControlledPodsName, err)
 	}
 }
 
-func createWaitForControlledPodsRunningMeasurement() measurement.Measurement {
-	return &waitForControlledPodsRunningMeasurement{
+func createWaitForControlledPodsMeasurement() measurement.Measurement {
+	return &waitForControlledPodsMeasurement{
 		selector:   measurementutil.NewObjectSelector(),
 		queue:      workerqueue.NewWorkerQueue(waitForControlledPodsWorkers),
 		checkerMap: checker.NewCheckerMap(),
 	}
 }
 
-type waitForControlledPodsRunningMeasurement struct {
+type waitForControlledPodsMeasurement struct {
 	apiVersion        string
 	kind              string
 	selector          *measurementutil.ObjectSelector
+	desiredStatus     string
 	operationTimeout  time.Duration
 	stopCh            chan struct{}
 	isRunning         bool
@@ -83,7 +84,7 @@ type waitForControlledPodsRunningMeasurement struct {
 // If namespace is not passed by parameter, all-namespace scope is assumed.
 // "Start" action starts observation of the controlling objects, while "gather" waits for until
 // specified number of controlling objects have all pods running.
-func (w *waitForControlledPodsRunningMeasurement) Execute(config *measurement.MeasurementConfig) ([]measurement.Summary, error) {
+func (w *waitForControlledPodsMeasurement) Execute(config *measurement.MeasurementConfig) ([]measurement.Summary, error) {
 	w.clusterFramework = config.ClusterFramework
 
 	action, err := util.GetString(config.Params, "action")
@@ -104,6 +105,10 @@ func (w *waitForControlledPodsRunningMeasurement) Execute(config *measurement.Me
 		if err = w.selector.Parse(config.Params); err != nil {
 			return nil, err
 		}
+		w.desiredStatus, err = util.GetString(config.Params, "desiredStatus")
+		if err != nil {
+			return nil, err
+		}
 		w.operationTimeout, err = util.GetDurationOrDefault(config.Params, "operationTimeout", defaultOperationTimeout)
 		if err != nil {
 			return nil, err
@@ -121,7 +126,7 @@ func (w *waitForControlledPodsRunningMeasurement) Execute(config *measurement.Me
 }
 
 // Dispose cleans up after the measurement.
-func (w *waitForControlledPodsRunningMeasurement) Dispose() {
+func (w *waitForControlledPodsMeasurement) Dispose() {
 	if !w.isRunning {
 		return
 	}
@@ -134,11 +139,11 @@ func (w *waitForControlledPodsRunningMeasurement) Dispose() {
 }
 
 // String returns a string representation of the metric.
-func (*waitForControlledPodsRunningMeasurement) String() string {
-	return waitForControlledPodsRunningName
+func (*waitForControlledPodsMeasurement) String() string {
+	return waitForControlledPodsName
 }
 
-func (w *waitForControlledPodsRunningMeasurement) start() error {
+func (w *waitForControlledPodsMeasurement) start() error {
 	if w.isRunning {
 		klog.Infof("%v: wait for controlled pods measurement already running", w)
 		return nil
@@ -167,7 +172,7 @@ func (w *waitForControlledPodsRunningMeasurement) start() error {
 	return informer.StartAndSync(i, w.stopCh, informerSyncTimeout)
 }
 
-func (w *waitForControlledPodsRunningMeasurement) gather(syncTimeout time.Duration) error {
+func (w *waitForControlledPodsMeasurement) gather(syncTimeout time.Duration) error {
 	klog.Infof("%v: waiting for controlled pods measurement...", w)
 	if !w.isRunning {
 		return fmt.Errorf("metric %s has not been started", w)
@@ -230,7 +235,7 @@ func (w *waitForControlledPodsRunningMeasurement) gather(syncTimeout time.Durati
 // This function does not return errors only logs them. All possible errors will be caught in gather function.
 // If this function does not executes correctly, verifying number of running pods will fail,
 // causing incorrect objects number error to be returned.
-func (w *waitForControlledPodsRunningMeasurement) handleObject(oldObj, newObj interface{}) {
+func (w *waitForControlledPodsMeasurement) handleObject(oldObj, newObj interface{}) {
 	var oldRuntimeObj runtime.Object
 	var newRuntimeObj runtime.Object
 	var ok bool
@@ -277,7 +282,7 @@ func (w *waitForControlledPodsRunningMeasurement) handleObject(oldObj, newObj in
 	}
 }
 
-func (w *waitForControlledPodsRunningMeasurement) checkScaledown(oldObj, newObj runtime.Object) (bool, error) {
+func (w *waitForControlledPodsMeasurement) checkScaledown(oldObj, newObj runtime.Object) (bool, error) {
 	oldReplicas, err := runtimeobjects.GetReplicasFromRuntimeObject(w.clusterFramework.GetClientSets().GetClient(), oldObj)
 	if err != nil {
 		return false, err
@@ -290,7 +295,7 @@ func (w *waitForControlledPodsRunningMeasurement) checkScaledown(oldObj, newObj 
 	return newReplicas < oldReplicas, nil
 }
 
-func (w *waitForControlledPodsRunningMeasurement) handleObjectLocked(oldObj, newObj runtime.Object) error {
+func (w *waitForControlledPodsMeasurement) handleObjectLocked(oldObj, newObj runtime.Object) error {
 	isObjDeleted := newObj == nil
 	isScalingDown, err := w.checkScaledown(oldObj, newObj)
 	if err != nil {
@@ -323,7 +328,7 @@ func (w *waitForControlledPodsRunningMeasurement) handleObjectLocked(oldObj, new
 	return nil
 }
 
-func (w *waitForControlledPodsRunningMeasurement) deleteObjectLocked(obj runtime.Object) error {
+func (w *waitForControlledPodsMeasurement) deleteObjectLocked(obj runtime.Object) error {
 	if obj == nil {
 		return nil
 	}
@@ -335,7 +340,7 @@ func (w *waitForControlledPodsRunningMeasurement) deleteObjectLocked(obj runtime
 	return nil
 }
 
-func (w *waitForControlledPodsRunningMeasurement) updateOpResourceVersion(runtimeObj runtime.Object) error {
+func (w *waitForControlledPodsMeasurement) updateOpResourceVersion(runtimeObj runtime.Object) error {
 	if runtimeObj == nil {
 		return nil
 	}
@@ -357,7 +362,7 @@ func (w *waitForControlledPodsRunningMeasurement) updateOpResourceVersion(runtim
 // - When create/delete operation are called we expect the exact number of objects.
 // - When objects is updated we expect to receive event referencing this specific version.
 //   Using maximum from objects resource versions assures that all updates will be processed.
-func (w *waitForControlledPodsRunningMeasurement) getObjectCountAndMaxVersion() (int, uint64, error) {
+func (w *waitForControlledPodsMeasurement) getObjectCountAndMaxVersion() (int, uint64, error) {
 	var desiredCount int
 	var maxResourceVersion uint64
 	objects, err := runtimeobjects.ListRuntimeObjectsForKind(w.clusterFramework.GetClientSets().GetClient(),
@@ -385,7 +390,7 @@ func (w *waitForControlledPodsRunningMeasurement) getObjectCountAndMaxVersion() 
 	return desiredCount, maxResourceVersion, nil
 }
 
-func (w *waitForControlledPodsRunningMeasurement) waitForRuntimeObject(obj runtime.Object, isDeleted bool) (*objectChecker, error) {
+func (w *waitForControlledPodsMeasurement) waitForRuntimeObject(obj runtime.Object, isDeleted bool) (*objectChecker, error) {
 	runtimeObjectNamespace, err := runtimeobjects.GetNamespaceFromRuntimeObject(obj)
 	if err != nil {
 		return nil, err
@@ -417,6 +422,7 @@ func (w *waitForControlledPodsRunningMeasurement) waitForRuntimeObject(obj runti
 				FieldSelector: "",
 			},
 			DesiredPodCount:     int(runtimeObjectReplicas),
+			DesiredStatus:       w.desiredStatus,
 			EnableLogging:       true,
 			CallerName:          w.String(),
 			WaitForPodsInterval: defaultWaitForPodsInterval,

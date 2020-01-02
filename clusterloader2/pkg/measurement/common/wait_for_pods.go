@@ -26,33 +26,37 @@ import (
 )
 
 const (
-	defaultWaitForPodsTimeout         = 60 * time.Second
-	defaultWaitForPodsInterval        = 5 * time.Second
-	waitForRunningPodsMeasurementName = "WaitForRunningPods"
+	defaultWaitForPodsTimeout  = 60 * time.Second
+	defaultWaitForPodsInterval = 5 * time.Second
+	waitForPodsMeasurementName = "WaitForPods"
 )
 
 func init() {
-	if err := measurement.Register(waitForRunningPodsMeasurementName, createWaitForRunningPodsMeasurement); err != nil {
-		klog.Fatalf("Cannot register %s: %v", waitForRunningPodsMeasurementName, err)
+	if err := measurement.Register(waitForPodsMeasurementName, createWaitForPodsMeasurement); err != nil {
+		klog.Fatalf("Cannot register %s: %v", waitForPodsMeasurementName, err)
 	}
 }
 
-func createWaitForRunningPodsMeasurement() measurement.Measurement {
-	return &waitForRunningPodsMeasurement{}
+func createWaitForPodsMeasurement() measurement.Measurement {
+	return &waitForPodsMeasurement{}
 }
 
-type waitForRunningPodsMeasurement struct{}
+type waitForPodsMeasurement struct{}
 
 // Execute waits until desired number of pods are running or until timeout happens.
 // Pods can be specified by field and/or label selectors.
 // If namespace is not passed by parameter, all-namespace scope is assumed.
-func (w *waitForRunningPodsMeasurement) Execute(config *measurement.MeasurementConfig) ([]measurement.Summary, error) {
+func (w *waitForPodsMeasurement) Execute(config *measurement.MeasurementConfig) ([]measurement.Summary, error) {
 	desiredPodCount, err := util.GetInt(config.Params, "desiredPodCount")
 	if err != nil {
 		return nil, err
 	}
 	selector := measurementutil.NewObjectSelector()
 	if err := selector.Parse(config.Params); err != nil {
+		return nil, err
+	}
+	desiredStatus, err := util.GetString(config.Params, "desiredStatus")
+	if err != nil {
 		return nil, err
 	}
 	timeout, err := util.GetDurationOrDefault(config.Params, "timeout", defaultWaitForPodsTimeout)
@@ -67,6 +71,7 @@ func (w *waitForRunningPodsMeasurement) Execute(config *measurement.MeasurementC
 	options := &measurementutil.WaitForPodOptions{
 		Selector:            selector,
 		DesiredPodCount:     desiredPodCount,
+		DesiredStatus:       desiredStatus,
 		EnableLogging:       true,
 		CallerName:          w.String(),
 		WaitForPodsInterval: defaultWaitForPodsInterval,
@@ -75,9 +80,9 @@ func (w *waitForRunningPodsMeasurement) Execute(config *measurement.MeasurementC
 }
 
 // Dispose cleans up after the measurement.
-func (*waitForRunningPodsMeasurement) Dispose() {}
+func (*waitForPodsMeasurement) Dispose() {}
 
 // String returns a string representation of the measurement.
-func (*waitForRunningPodsMeasurement) String() string {
-	return waitForRunningPodsMeasurementName
+func (*waitForPodsMeasurement) String() string {
+	return waitForPodsMeasurementName
 }

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
 )
@@ -32,10 +33,21 @@ const (
 	none
 )
 
+const (
+	podRunningStatus   = "Running"
+	podScheduledStatus = "Scheduled"
+)
+
+var supportedDesiredStatuses = []string{
+	podRunningStatus,
+	podScheduledStatus,
+}
+
 // WaitForPodOptions is an options used by WaitForPods methods.
 type WaitForPodOptions struct {
 	Selector            *ObjectSelector
 	DesiredPodCount     int
+	DesiredStatus       string
 	EnableLogging       bool
 	CallerName          string
 	WaitForPodsInterval time.Duration
@@ -45,6 +57,13 @@ type WaitForPodOptions struct {
 // Pods are be specified by namespace, field and/or label selectors.
 // If stopCh is closed before all pods are running, the error will be returned.
 func WaitForPods(clientSet clientset.Interface, stopCh <-chan struct{}, options *WaitForPodOptions) error {
+	if options.DesiredStatus == "" {
+		options.DesiredStatus = podRunningStatus
+	}
+	if err := validateDesiredStatus(options.DesiredStatus); err != nil {
+		return err
+	}
+
 	ps, err := NewPodStore(clientSet, options.Selector)
 	if err != nil {
 		return fmt.Errorf("pod store creation error: %v", err)
@@ -86,12 +105,38 @@ func WaitForPods(clientSet clientset.Interface, stopCh <-chan struct{}, options 
 			if options.EnableLogging {
 				klog.Infof("%s: %s: %s", options.CallerName, options.Selector.String(), podsStatus.String())
 			}
-			// We allow inactive pods (e.g. eviction happened).
-			// We wait until there is a desired number of pods running and all other pods are inactive.
-			if len(pods) == (podsStatus.Running+podsStatus.Inactive) && podsStatus.Running == options.DesiredPodCount {
-				return nil
+
+			switch options.DesiredStatus {
+			case podRunningStatus:
+				if runningPodsMatchDesired(pods, &podsStatus, options.DesiredPodCount) {
+					return nil
+				}
+			case podScheduledStatus:
+				if scheduledPodsMatchDesired(&podsStatus, options.DesiredPodCount) {
+					return nil
+				}
 			}
+
 			oldPods = pods
 		}
 	}
+}
+
+func validateDesiredStatus(status string) error {
+	for _, supportedStatus := range supportedDesiredStatuses {
+		if status == supportedStatus {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported desired status %s, valid status are: %v", status, supportedDesiredStatuses)
+}
+
+func runningPodsMatchDesired(pods []*corev1.Pod, podsStatus *PodsStartupStatus, desiredCount int) bool {
+	// We allow inactive pods (e.g. eviction happened).
+	// We wait until there is a desired number of pods running and all other pods are inactive.
+	return len(pods) == (podsStatus.Running+podsStatus.Inactive) && podsStatus.Running == desiredCount
+}
+
+func scheduledPodsMatchDesired(podsStatus *PodsStartupStatus, desiredCount int) bool {
+	return podsStatus.Scheduled == desiredCount
 }
